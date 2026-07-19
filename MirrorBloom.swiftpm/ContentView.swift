@@ -12,6 +12,7 @@ struct ContentView: View {
             ZStack {
                 MirrorBackdropView(mode: conductor.mode, session: conductor.camera.session)
                 GardenCanvasView(world: world)
+                vignette(size: size)
                 HintView(world: world, mode: conductor.mode)
             }
             .contentShape(Rectangle())
@@ -26,6 +27,17 @@ struct ContentView: View {
         }
         .background(.black)
         .ignoresSafeArea()
+    }
+
+    /// A gentle, static darkening of the corners. It is a plain SwiftUI view (composited
+    /// by Core Animation), so unlike a Canvas fill it costs nothing per frame.
+    private func vignette(size: CGSize) -> some View {
+        RadialGradient(
+            gradient: Gradient(colors: [.clear, .black.opacity(0.35)]),
+            center: .center,
+            startRadius: min(size.width, size.height) * 0.45,
+            endRadius: max(size.width, size.height) * 0.75)
+        .allowsHitTesting(false)
     }
 }
 
@@ -48,7 +60,8 @@ struct HintView: View {
                 Spacer()
                 Text(mode == .live ? "Raise your hand" : "Touch and hold")
                     .font(.system(.title3, design: .serif).italic())
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .shadow(color: .black.opacity(0.7), radius: 8)   // legible over a bright room
                     .padding(.bottom, 80)
                     .opacity(show ? 1 : 0)
                     .animation(.easeInOut(duration: 1.5), value: show)

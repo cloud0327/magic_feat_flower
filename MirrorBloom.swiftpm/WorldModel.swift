@@ -2,32 +2,31 @@ import SwiftUI
 import QuartzCore
 import Observation
 
-/// The five stages of the three-minute journey. Time only moves forward.
+/// The four stages of the experience. Time only moves forward.
 enum JourneyPhase: Equatable {
-    case dormant                     // dark mirror, waiting for a hand
+    case dormant                     // waiting for a hand
     case awakening                   // a hand has appeared; light answers it
-    case blooming                    // flowers are being grown, 1…4
-    case finale(start: TimeInterval) // the fifth flower — the garden fills with light
-    case afterglow                   // a calm sky to keep playing under
+    case blooming                    // flowers are appearing, 1…4
+    case finale(start: TimeInterval) // the fifth flower — light fills the mirror
+    case afterglow                   // a calm, bright world to keep playing in
 }
 
-/// A flower that has bloomed and is (or has finished) drifting to its garden spot.
+/// A flower that has bloomed. It stays where it was released, gently bobbing, and its
+/// head is drawn from an image that is baked a few frames after it opens.
 struct BloomedFlower: Identifiable {
     let id = UUID()
     var flower: Flower
     var birthTime: TimeInterval
-    var from: CGPoint    // where the caster's bud opened
-    var to: CGPoint      // the resting spot it drifts toward
+    var anchor: CGPoint        // where it was set free; it lives here in your world
+    var bakedRadius: CGFloat   // the radius its image was baked at
+    var headImage: Image?      // nil for the first few frames, then a ready-made sprite
 }
 
 /// The single source of truth for the experience.
 ///
-/// Only `journey` and `mirrorMode` are observed, because they change rarely and
-/// should refresh the UI. Everything the draw loop touches every frame is marked
-/// `@ObservationIgnored` so SwiftUI is never invalidated 60 times a second.
-///
-/// All access happens on the main thread: gesture events arrive on the main actor,
-/// and `update(now:size:)` is called from the Canvas draw closure (also main).
+/// Only `journey` and `mirrorMode` are observed, because they change rarely and should
+/// refresh the UI. Everything the draw loop touches every frame is `@ObservationIgnored`
+/// so SwiftUI is never invalidated 60 times a second. All access is on the main thread.
 @Observable
 final class WorldModel {
 
@@ -43,51 +42,40 @@ final class WorldModel {
 
     @ObservationIgnored let particles = ParticleSystem()
     @ObservationIgnored private(set) var flowers: [BloomedFlower] = []
-
-    /// The moment, sampled twice a second, so the growing bud can preview its color.
     @ObservationIgnored private(set) var cachedMoment = MomentSnapshot.clockFallback()
 
+    /// The dark wash over the camera. It eases toward a target set by the room's
+    /// brightness, so a bright room shows through and a dark room stays moody.
+    @ObservationIgnored private(set) var veilOpacity: Double = 0.35
+
+    /// A smoothed frame rate, shown only in debug builds.
+    @ObservationIgnored private(set) var fps: Double = 60
+
     // Hand and bud
-    @ObservationIgnored private(set) var handPoint: CGPoint?     // nil when no bud is held
+    @ObservationIgnored private(set) var handPoint: CGPoint?
     @ObservationIgnored private(set) var handPose: HandPose = .unknown
-    @ObservationIgnored private(set) var budGrowth: Double = 0   // 0…1
+    @ObservationIgnored private(set) var budGrowth: Double = 0
     @ObservationIgnored private(set) var handPresent = false
     @ObservationIgnored private var lastHandPoint: CGPoint?
     @ObservationIgnored private var lostSince: TimeInterval?
     @ObservationIgnored private var fullyGrownSince: TimeInterval?
 
-    // Timing / bookkeeping
+    // Timing
     @ObservationIgnored private var lastUpdate: TimeInterval = 0
     @ObservationIgnored private var lastMomentCache: TimeInterval = 0
+    @ObservationIgnored private var lastPetalRain: TimeInterval = 0
     @ObservationIgnored private var lastSize: CGSize = .zero
 
-    /// How many flowers fill the garden before the finale.
+    /// How many flowers open before the finale.
     let bloomTarget = 5
 
-    /// How long a flower takes to drift from the hand to its garden spot.
-    private let driftDuration: TimeInterval = 2.5
-
-    /// How long a bud takes to grow to full, held in an open hand.
+    /// How long a bud takes to grow to full in a held hand.
     private let growSeconds: Double = 3.5
 
-    // MARK: - Derived values
+    // MARK: - Derived
 
-    /// 0…1: how full the garden is. Drives ambient richness and vines.
+    /// 0…1: how full your world is. Drives ambient richness.
     var gardenEnergy: Double { min(Double(flowers.count) / Double(bloomTarget), 1) }
-
-    /// How dark the mirror's veil is right now. It lifts during the finale so the
-    /// caster finally sees themselves clearly, framed by their flowers.
-    func backdropDim(now: TimeInterval) -> Double {
-        switch journey {
-        case .finale(let start):
-            let t = easeInOut(min((now - start) / 4, 1))
-            return 0.55 - t * (0.55 - 0.12)
-        case .afterglow:
-            return 0.12
-        default:
-            return 0.55
-        }
-    }
 
     // MARK: - Input (gesture events)
 
@@ -127,29 +115,47 @@ final class WorldModel {
 
     func update(now: TimeInterval, size: CGSize) {
         lastSize = size
-        let dt = min(now - lastUpdate, 0.05)
+        let rawDelta = now - lastUpdate
+        let dt = min(rawDelta, 0.05)
         lastUpdate = now
         guard dt > 0 else { return }
+        if rawDelta > 0 { fps = fps * 0.9 + (1.0 / rawDelta) * 0.1 }
 
         refreshMomentCache(now: now)
+        updateVeil(dt: dt)
         updateBud(dt: dt, now: now)
-        updateDriftingFlowers(now: now)
-        advanceToAfterglow(now: now)
+        updateFinale(now: now, size: size)
 
-        let dustTarget = 30 + Int(gardenEnergy * 40)
+        let dustTarget = 24 + Int(gardenEnergy * 30)
         particles.maintainDust(in: size, targetCount: dustTarget)
         particles.update(dt: dt, attractor: handPresent ? handPoint : nil)
     }
 
-    /// Grows the bud while a hand is held, and decides what happens when the hand
-    /// leaves — always ending in a flower or a gentle dissolve, never a dead bud.
+    /// Eases the veil toward its brightness-driven target so lighting changes are smooth.
+    private func updateVeil(dt: Double) {
+        veilOpacity += (veilTarget() - veilOpacity) * min(dt * 2, 1)
+    }
+
+    private func veilTarget() -> Double {
+        // During and after the finale, light wins: the veil nearly vanishes.
+        switch journey {
+        case .finale, .afterglow: return 0.05
+        default: break
+        }
+        guard mirrorMode == .live else { return 0.3 }   // the enchanted mirror stays dim
+        // A bright room (0.7+) barely dims; a dark room (0.15) dims to 0.35.
+        return remap(cachedMoment.roomBrightness, 0.15, 0.7, 0.35, 0.05)
+    }
+
+    /// Grows the bud while a hand is held, and decides what happens when it leaves —
+    /// always ending in a flower or a gentle dissolve, never a dead bud.
     private func updateBud(dt: Double, now: TimeInterval) {
         if handPresent, let point = handPoint {
             budGrowth = min(budGrowth + dt / growSeconds, 1.0)
             particles.spawnGather(around: point, count: 2, hue: cachedMoment.roomHue)
 
-            // Once full, hold a beat and then bloom on its own — so a player who
-            // never discovers the flick still always gets a flower.
+            // Once full, hold a beat and bloom on its own — so a player who never
+            // discovers the flick still always gets a flower.
             if budGrowth >= 1.0 {
                 if fullyGrownSince == nil { fullyGrownSince = now }
                 if now - (fullyGrownSince ?? now) > 0.5 {
@@ -181,12 +187,15 @@ final class WorldModel {
         fullyGrownSince = nil
     }
 
-    /// Leaves a faint wake behind each flower still drifting to its spot.
-    private func updateDriftingFlowers(now: TimeInterval) {
-        for flower in flowers where settleFraction(of: flower, now: now) < 1 {
-            if Int.random(in: 0..<2) == 0 {
-                particles.trail(at: position(of: flower, now: now), hue: flower.flower.tipHue)
-            }
+    /// During the finale, rain petals from the top and, after a while, settle into afterglow.
+    private func updateFinale(now: TimeInterval, size: CGSize) {
+        guard case let .finale(start) = journey else { return }
+        if now - lastPetalRain > 0.2 {
+            lastPetalRain = now
+            particles.spawnPetalRain(in: size, hue: cachedMoment.roomHue, count: 3)
+        }
+        if now - start > 8 {
+            scheduleJourney(.afterglow)
         }
     }
 
@@ -199,9 +208,12 @@ final class WorldModel {
         let seed = FlowerSeed(moment: moment, pose: pose, growth: budGrowth, castXUnit: castX)
         let flower = FlowerGrower.grow(from: seed)
 
-        let slot = gardenSlot(index: flowers.count, size: lastSize)
-        flowers.append(BloomedFlower(flower: flower, birthTime: now, from: point, to: slot))
-        particles.burstBloom(at: point, hue: flower.tipHue, count: 60)
+        let radius = displayRadius(for: flower)
+        let bloomed = BloomedFlower(flower: flower, birthTime: now, anchor: point,
+                                    bakedRadius: radius, headImage: nil)
+        flowers.append(bloomed)
+        particles.burstBloom(at: point, hue: flower.tipHue, count: 55)
+        bakeHead(for: bloomed.id, flower: flower, radius: radius)
 
         budGrowth = 0
         fullyGrownSince = nil
@@ -214,48 +226,43 @@ final class WorldModel {
         }
     }
 
-    private func advanceToAfterglow(now: TimeInterval) {
-        if case let .finale(start) = journey, now - start > 8 {
-            scheduleJourney(.afterglow)
+    /// The on-screen radius of a flower head, from the canvas size and the flower's size.
+    func displayRadius(for flower: Flower) -> CGFloat {
+        min(lastSize.width, lastSize.height) * 0.065 * flower.sizeScale
+    }
+
+    /// Bakes the head image off the draw loop and slots it into the flower when ready.
+    /// Until then the canvas falls back to drawing the head as vectors.
+    private func bakeHead(for id: UUID, flower: Flower, radius: CGFloat) {
+        Task { @MainActor in
+            guard let image = flower.rasterizedHead(radius: radius) else { return }
+            if let index = flowers.firstIndex(where: { $0.id == id }) {
+                flowers[index].headImage = image
+            }
         }
     }
 
-    /// Changing observed state from inside the draw loop would upset SwiftUI, so we
-    /// hop to the next main-actor turn to do it safely.
+    /// Changing observed state from inside the draw loop would upset SwiftUI, so we hop
+    /// to the next main-actor turn to do it safely.
     private func scheduleJourney(_ phase: JourneyPhase) {
         Task { @MainActor in
             if self.journey != phase { self.journey = phase }
         }
     }
 
-    // MARK: - Garden layout & flower motion
+    // MARK: - Flower motion
 
-    /// A stable resting spot for the n-th flower. The first `bloomTarget` line the
-    /// lower meadow; any extras (during afterglow) settle a little higher up.
-    func gardenSlot(index: Int, size: CGSize) -> CGPoint {
-        let golden = 0.61803398875
-        let spread = (0.15 + Double(index) * golden).truncatingRemainder(dividingBy: 1)
-        let x = (0.10 + spread * 0.80) * size.width
-        let y: CGFloat
-        if index < bloomTarget {
-            let row = Double(index % 3) / 2   // gentle up-and-down along the meadow
-            y = (0.80 + row * 0.08) * size.height
-        } else {
-            y = (0.60 + spread * 0.15) * size.height
-        }
-        return CGPoint(x: x, y: y)
-    }
-
-    /// Where a flower is right now: easing from `from` to `to` over the drift, then resting.
+    /// A flower bobs gently around its anchor, so your world feels alive without drifting.
     func position(of flower: BloomedFlower, now: TimeInterval) -> CGPoint {
-        let f = settleFraction(of: flower, now: now)
-        guard f < 1 else { return flower.to }
-        return lerp(flower.from, flower.to, easeInOut(f))
+        let age = now - flower.birthTime
+        let bob = CGFloat(sin(age * 0.9 + flower.flower.swayPhase)) * (flower.bakedRadius * 0.05)
+        return CGPoint(x: flower.anchor.x, y: flower.anchor.y + bob)
     }
 
-    /// 0 at bloom, 1 once the flower has fully settled into the garden.
-    func settleFraction(of flower: BloomedFlower, now: TimeInterval) -> Double {
-        min((now - flower.birthTime) / driftDuration, 1)
+    /// Pops the flower open from small to full over ~0.8 seconds.
+    func popScale(of flower: BloomedFlower, now: TimeInterval) -> CGFloat {
+        let t = min((now - flower.birthTime) / 0.8, 1)
+        return CGFloat(0.3 + 0.7 * easeOut(t))
     }
 
     // MARK: - Moment cache
@@ -270,12 +277,15 @@ final class WorldModel {
 
 // MARK: - Small math helpers
 
-/// Smoothstep easing: slow in, slow out.
-private func easeInOut(_ t: Double) -> Double {
+/// Ease-out: fast start, gentle finish.
+private func easeOut(_ t: Double) -> Double {
     let x = min(max(t, 0), 1)
-    return x * x * (3 - 2 * x)
+    return 1 - (1 - x) * (1 - x)
 }
 
-private func lerp(_ a: CGPoint, _ b: CGPoint, _ t: Double) -> CGPoint {
-    CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+/// Maps `v` from one range to another, clamped to the output range.
+private func remap(_ v: Double, _ inLow: Double, _ inHigh: Double,
+                   _ outLow: Double, _ outHigh: Double) -> Double {
+    let t = min(max((v - inLow) / (inHigh - inLow), 0), 1)
+    return outLow + t * (outHigh - outLow)
 }
