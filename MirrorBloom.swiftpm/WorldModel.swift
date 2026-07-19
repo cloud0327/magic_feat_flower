@@ -51,7 +51,7 @@ final class WorldModel {
     @ObservationIgnored private(set) var handPoint: CGPoint?     // nil when no bud is held
     @ObservationIgnored private(set) var handPose: HandPose = .unknown
     @ObservationIgnored private(set) var budGrowth: Double = 0   // 0…1
-    @ObservationIgnored private var handPresent = false
+    @ObservationIgnored private(set) var handPresent = false
     @ObservationIgnored private var lastHandPoint: CGPoint?
     @ObservationIgnored private var lostSince: TimeInterval?
     @ObservationIgnored private var fullyGrownSince: TimeInterval?
