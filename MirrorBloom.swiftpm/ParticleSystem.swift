@@ -6,6 +6,7 @@ enum ParticleKind {
     case gather      // sparks rushing inward to the caster's hand
     case bloomBurst  // light thrown outward when a flower opens
     case trail       // a soft wake left by a flower drifting to the garden
+    case petalRain   // petals fluttering down during the finale
 }
 
 /// One mote of light. Plain data — the system below moves and ages it.
@@ -87,6 +88,11 @@ final class ParticleSystem {
             // Just slow to a stop where it was dropped.
             mote.velocity.dx *= 0.96
             mote.velocity.dy *= 0.96
+
+        case .petalRain:
+            // Fall gently and flutter side to side, like a real petal.
+            mote.velocity.dy += 15 * dt
+            mote.velocity.dx = sin(mote.position.y / 30) * 18
         }
     }
 
@@ -152,6 +158,20 @@ final class ParticleSystem {
             life: life, maxLife: life,
             size: .random(in: 1.5...3),
             hue: hue, kind: .trail))
+    }
+
+    /// Petals fluttering down from the top of the screen during the finale.
+    func spawnPetalRain(in size: CGSize, hue: Double, count: Int) {
+        for _ in 0..<count {
+            let life = Double.random(in: 3.5...6)
+            add(Particle(
+                position: CGPoint(x: .random(in: 0...size.width), y: -10),
+                velocity: CGVector(dx: .random(in: -10...10), dy: .random(in: 30...70)),
+                life: life, maxLife: life,
+                size: .random(in: 2.5...4.5),
+                hue: hue + .random(in: -0.08...0.08),
+                kind: .petalRain))
+        }
     }
 
     // MARK: - Helpers
