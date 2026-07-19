@@ -53,7 +53,8 @@ struct CameraPreviewView: UIViewRepresentable {
 /// with two slow drifting glows, like candlelight somewhere behind the glass.
 struct EnchantedMirrorView: View {
     var body: some View {
-        TimelineView(.animation) { timeline in
+        // The dark mirror drifts slowly, so 20 fps is plenty and saves the GPU.
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { timeline in
             let now = timeline.date.timeIntervalSinceReferenceDate
             Canvas { context, size in
                 // Base gradient: near-black at the edges, faint indigo in the middle.

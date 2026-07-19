@@ -30,7 +30,7 @@ final class HandTracker {
     }()
 
     private var lastRun: TimeInterval = 0
-    private let minInterval: TimeInterval = 1.0 / 30.0   // detection at ≤30 Hz is plenty
+    private let minInterval: TimeInterval = 1.0 / 20.0   // 20 Hz; One-Euro fills the gaps
 
     private let viewSizeLock = NSLock()
     private var _viewSize: CGSize = .zero

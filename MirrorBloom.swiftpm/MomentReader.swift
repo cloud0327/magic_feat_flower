@@ -50,11 +50,11 @@ final class MomentReader {
     /// Camera-queue entry point. Cheap: each sub-reading runs on its own slow clock.
     func process(_ pixelBuffer: CVPixelBuffer) {
         let now = CACurrentMediaTime()
-        if now - lastSceneRun >= 0.5 {
+        if now - lastSceneRun >= 1.0 {
             lastSceneRun = now
             readRoom(pixelBuffer)
         }
-        if now - lastFaceRun >= 0.33 {
+        if now - lastFaceRun >= 0.5 {
             lastFaceRun = now
             readFace(pixelBuffer)
         }
