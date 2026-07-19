@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit   // ImageRenderer.uiImage
 
 /// Five families of flowers — one for each shape a hand can make.
 enum FlowerFamily {
@@ -260,5 +261,37 @@ extension Flower {
                       control2: CGPoint(x: width, y: -length * 0.35))
         path.closeSubpath()
         return path
+    }
+}
+
+// MARK: - Baking a head into an image
+
+/// A tiny view that draws one flower head. Used only to bake the head into a bitmap
+/// once at bloom, so the main canvas can then draw a single sprite each frame instead
+/// of dozens of gradient-filled paths — the key performance win.
+struct FlowerHeadView: View {
+    let flower: Flower
+    let radius: CGFloat
+
+    var body: some View {
+        Canvas { context, size in
+            var ctx = context
+            ctx.translateBy(x: size.width / 2, y: size.height / 2)
+            flower.drawHead(in: &ctx, radius: radius, time: 0)
+        }
+        .frame(width: radius * 3, height: radius * 3)   // room for the outer glow
+    }
+}
+
+extension Flower {
+    /// Bakes the head into an image at the given point radius. Must run on the main
+    /// actor (an ImageRenderer requirement). The image is `radius * 3` on a side.
+    @MainActor
+    func rasterizedHead(radius: CGFloat, scale: CGFloat = 2) -> Image? {
+        let renderer = ImageRenderer(content: FlowerHeadView(flower: self, radius: radius))
+        renderer.scale = scale
+        renderer.isOpaque = false
+        guard let uiImage = renderer.uiImage else { return nil }
+        return Image(uiImage: uiImage)
     }
 }
